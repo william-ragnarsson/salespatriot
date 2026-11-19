@@ -4,10 +4,13 @@ Usage:
   python scraper.py                      # today
   python scraper.py --date 11-18-2026    # a specific issue date (MM-DD-YYYY)
   python scraper.py --from-file samples/page1.html   # offline, parse saved HTML
+  python scraper.py --date 11-19-2026 --save-dir samples/11-19-2026   # also save raw pages
+  python scraper.py --from-dir samples/11-19-2026    # offline, replay a saved day
 """
 import argparse
 import re
 import time
+from pathlib import Path
 from datetime import date, datetime, timezone
 
 import requests
@@ -90,12 +93,17 @@ def parse_rows(html):
     return rows
 
 
-def fetch_date(s, value, delay=0.5, max_pages=500):
-    """Yield (page_no, rows) for every page of RFQs issued on `value` (MM-DD-YYYY)."""
+def fetch_date(s, value, delay=0.5, max_pages=500, save_dir=None):
+    """Yield (page_no, rows) for every page of RFQs issued on `value` (MM-DD-YYYY).
+    With save_dir, each raw page is also written to save_dir/page-N.html."""
     url = RECS_URL.format(date=value)
+    if save_dir:
+        Path(save_dir).mkdir(parents=True, exist_ok=True)
     r = s.get(url, timeout=60)
     page = 1
     while True:
+        if save_dir:
+            Path(save_dir, f"page-{page}.html").write_text(r.text)
         rows = parse_rows(r.text)
         yield page, rows
         soup = BeautifulSoup(r.text, "html.parser")
@@ -109,10 +117,21 @@ def fetch_date(s, value, delay=0.5, max_pages=500):
         page += 1
 
 
+def replay_dir(path):
+    """Yield (page_no, rows) from pages saved with --save-dir, in page order."""
+    files = sorted(Path(path).glob("page-*.html"), key=lambda f: int(f.stem.split("-")[1]))
+    if not files:
+        raise FileNotFoundError(f"No page-N.html files in {path}")
+    for f in files:
+        yield int(f.stem.split("-")[1]), parse_rows(f.read_text())
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", default=date.today().strftime("%m-%d-%Y"), help="MM-DD-YYYY")
     ap.add_argument("--from-file", help="parse a saved DIBBS results page instead of fetching")
+    ap.add_argument("--from-dir", help="replay a day saved with --save-dir instead of fetching")
+    ap.add_argument("--save-dir", help="also save each raw page to DIR/page-N.html")
     ap.add_argument("--db", default="dibbs.db")
     ap.add_argument("--max-pages", type=int, default=500)
     args = ap.parse_args()
@@ -124,14 +143,18 @@ def main():
         print(f"{len(rows)} rows from file: {ins} new, {upd} updated")
         return
 
-    s = session()
+    if args.from_dir:
+        pages, label = replay_dir(args.from_dir), args.from_dir
+    else:
+        pages = fetch_date(session(), args.date, max_pages=args.max_pages, save_dir=args.save_dir)
+        label = args.date
     total = ins_total = 0
-    for page, rows in fetch_date(s, args.date, max_pages=args.max_pages):
+    for page, rows in pages:
         ins, _ = db.upsert_many(conn, rows)
         total += len(rows)
         ins_total += ins
         print(f"page {page}: {len(rows)} rows ({ins} new)", flush=True)
-    print(f"Done {args.date}: {total} rows scraped, {ins_total} new, "
+    print(f"Done {label}: {total} rows scraped, {ins_total} new, "
           f"{conn.execute('SELECT COUNT(*) FROM rfq').fetchone()[0]} total in DB")
 
 
