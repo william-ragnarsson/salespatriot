@@ -60,7 +60,7 @@ def parse_rows(html):
     grid = soup.find(id=GRID_ID)
     if grid is None:
         return []
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
     rows = []
     for tr in grid.find_all("tr", recursive=False):
         if not (tr.get("class") and tr["class"][0] in ("BgWhite", "BgSilver")):

@@ -55,7 +55,7 @@ def get_db():
 
 
 def now_iso():
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def alnum(s: str) -> str:
