@@ -1,0 +1,7 @@
+{
+  "groups": [
+    {"supplier": "Keystone Microelectronics", "nsns": [], "fscs": ["5962"], "keywords": []},
+    {"supplier": "Ridgeline Machining", "nsns": ["1005-01-601-8488", "1005-01-671-4953"], "fscs": [], "keywords": []},
+    {"supplier": "Bayside Adhesives", "nsns": [], "fscs": ["8040"], "keywords": ["adhesive"]}
+  ]
+}
