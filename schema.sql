@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS rfq (
   return_by           TEXT,               -- ISO yyyy-mm-dd
   status              TEXT,               -- Open / Removed / ...
   dibbs_url           TEXT NOT NULL,      -- link back to DIBBS package view
-  scraped_at          TEXT NOT NULL,
+  scraped_at          TEXT NOT NULL,      -- last time this row was seen
+  first_seen_at       TEXT,               -- first time this row was seen; never updated
   PRIMARY KEY (solicitation_number, pr_number, nsn)
 );
 CREATE INDEX IF NOT EXISTS idx_rfq_fsc   ON rfq(fsc);
