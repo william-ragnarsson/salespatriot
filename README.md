@@ -1,86 +1,140 @@
 # DIBBS Solicitation Browser
 
-Pulls the daily RFQs (Requests for Quotation) that the Defense Logistics Agency posts on
-[DIBBS](https://www.dibbs.bsm.dla.mil/), stores them in SQLite, and shows a vendor only the ones
-they can actually supply, so they don't have to click through thousands of rows by hand.
+A web application that collects the daily RFQs (Requests for Quotation) the Defense Logistics Agency
+publishes on [DIBBS](https://www.dibbs.bsm.dla.mil/), stores them in SQLite, and shows each vendor
+only the solicitations they can supply.
 
 ```
 DIBBS website ──scraper.py──▶ dibbs.db (SQLite) ◀──api.py (FastAPI :8000)──▶ frontend (React + Vite :5173)
 ```
 
-**Status:** all four phases work: scraper + database, API, browse UI, capability profile with
-"My matches", and Interested/Dismissed triage.
+## Features
+- **Ingestion**: scrapes every RFQ for a given issue date from DIBBS and upserts it into SQLite.
+  Re-running a date is safe and never creates duplicates.
+- **Browse**: search and filter all RFQs by keyword, NSN, FSC, status, dates and quantity. Every row
+  links back to its page on DIBBS.
+- **Capability profile**: the NSNs, FSCs and keywords a vendor can supply. Distributors can keep one
+  group per supplier.
+- **Matches**: only the RFQs that match the profile, with the reason for each match (exact NSN >
+  FSC > keyword), sorted by match strength and then by the soonest return-by date. RFQs that arrived
+  since the list was last reviewed are flagged as new.
+- **Triage**: mark solicitations Interested or Dismissed so the daily list can be worked down to zero.
 
 ---
 
-## Run the demo (first time)
+## Requirements
+- Python 3
+- Node.js 18 or later
+- The `sqlite3` CLI (optional, for inspecting the database; preinstalled on macOS)
 
-You need Python 3 and Node 18+. Run each block from the project root.
+## Installation
+
+Run from the project root:
 
 ```bash
-# 1. Backend dependencies (one time)
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-
-# 2. Frontend dependencies (one time)
-cd frontend && npm install && cd ..
-
-# 3. Load data into SQLite (pick one)
-.venv/bin/python scraper.py                                  # live: today's RFQs from DIBBS (~45s, ~750 rows)
-.venv/bin/python scraper.py --from-file samples/page1.html   # offline: 50 rows from the saved sample page
+.venv/bin/pip install -r requirements.txt      # requests, beautifulsoup4, fastapi, uvicorn
+cd frontend && npm install && cd ..             # React + Vite
 ```
 
-Then start the app in **two terminals**:
+## Fetching data
+
+`scraper.py` fetches all RFQs for one **issue date** and writes them to `dibbs.db`. Dates use the
+DIBBS format `MM-DD-YYYY`. A full day is about 750 rows over 15 pages and takes around 45 seconds.
 
 ```bash
-# Terminal 1: API on http://localhost:8000
+# Today
+.venv/bin/python scraper.py
+
+# Yesterday (macOS; on Linux use: date -d yesterday +%m-%d-%Y)
+.venv/bin/python scraper.py --date "$(date -v-1d +%m-%d-%Y)"
+
+# A specific date
+.venv/bin/python scraper.py --date 11-18-2026
+
+# A range of dates
+for d in 11-16-2026 11-17-2026 11-18-2026; do .venv/bin/python scraper.py --date "$d"; done
+```
+
+Notes:
+- Rows are upserted on `(solicitation_number, pr_number, nsn)`, so a date can be fetched again at any
+  time to pick up status changes.
+- DIBBS only keeps about the last month of issue dates (listed on `RfqDates.aspx?category=issue`).
+  Weekends, holidays and older dates return 0 rows.
+- Rows are committed page by page. If DIBBS fails partway through, the pages already fetched are kept.
+
+### Other scraper options
+
+| Option | Purpose |
+|---|---|
+| `--date MM-DD-YYYY` | Issue date to fetch (default: today) |
+| `--save-dir DIR` | Also save each raw results page to `DIR/page-N.html` |
+| `--from-dir DIR` | Load a day saved with `--save-dir` instead of contacting DIBBS |
+| `--from-file FILE` | Parse a single saved results page instead of contacting DIBBS |
+| `--max-pages N` | Stop after `N` pages (useful for quick tests) |
+| `--db PATH` | Write to a different database file (default: `dibbs.db`) |
+
+### Working offline
+
+Raw pages can be saved once and loaded later without network access:
+
+```bash
+.venv/bin/python scraper.py --date 11-19-2026 --save-dir samples/11-19-2026   # fetch and save
+.venv/bin/python scraper.py --from-dir samples/11-19-2026                     # load from disk
+.venv/bin/python scraper.py --from-file samples/page1.html                    # single page, 50 rows
+```
+
+`samples/` contains saved days for `11-17-2026`, `11-18-2026` and `11-19-2026`, plus a single page
+in `samples/page1.html`.
+
+## Running the application
+
+Start the API and the UI in two terminals:
+
+```bash
+# API on http://localhost:8000 (interactive docs at /docs)
 .venv/bin/uvicorn api:app --reload --port 8000
 
-# Terminal 2: UI on http://localhost:5173
+# UI on http://localhost:5173 (proxies /api to :8000)
 cd frontend && npm run dev
 ```
 
-Open **http://localhost:5173**. Step 3 is optional: the **↻ Refresh from DIBBS** button in the
-header runs the same scrape from the UI. If DIBBS is down, the button offers
-**"Load saved sample page instead"**.
+Open http://localhost:5173. Data can also be fetched from the UI: **↻ Refresh from DIBBS** in the
+header runs the same scrape as `scraper.py` for today. If DIBBS is unreachable, it offers to load
+the saved sample page instead.
 
-### Demo walkthrough
-1. **All RFQs** tab: search and filter today's RFQs. Every row links back to DIBBS.
-2. **Profile** tab: enter the NSNs, FSCs and keywords you can supply. Distributors can add one group per supplier.
-3. **My matches** tab: only the RFQs that match, with the reason (exact NSN > FSC > keyword), sorted by match strength and then the soonest return-by date.
-4. Mark each one **Interested** or **Dismissed** to work the list down to zero.
+The UI has three views:
+- **All RFQs**: the full list with search and filters.
+- **Profile**: the capability profile editor.
+- **My matches**: RFQs matching the profile, with match reasons and Interested/Dismissed triage.
+
+### Reproducible state
+
+`scripts/demo_reset.sh` rebuilds the database into a fixed state from the saved samples, which is
+useful for testing the "new matches" flow. With the API running, it:
+1. deletes `dibbs.db` and loads `samples/11-17-2026` and `samples/11-18-2026`,
+2. sets the profile from `demo_profile.json` (a distributor with three suppliers),
+3. marks all current matches as seen.
+
+Loading the next day then reports only the matches it added:
+
+```bash
+scripts/demo_reset.sh
+curl -X POST localhost:8000/api/refresh -H 'content-type: application/json' \
+  -d '{"from_dir":"samples/11-19-2026"}'
+curl 'localhost:8000/api/matches?new_only=true'
+```
 
 ---
 
-## Command cheat sheet
-
-### Setup
-| Command | What it does |
-|---|---|
-| `python3 -m venv .venv` | Creates the Python virtualenv |
-| `.venv/bin/pip install -r requirements.txt` | Installs requests, beautifulsoup4, fastapi, uvicorn |
-| `cd frontend && npm install` | Installs React + Vite |
-
-### Scraper (data in)
-| Command | What it does |
-|---|---|
-| `.venv/bin/python scraper.py` | Scrapes all of **today's** RFQs from DIBBS into `dibbs.db` |
-| `.venv/bin/python scraper.py --date 11-18-2026` | Scrapes a specific issue date (`MM-DD-YYYY`) |
-| `.venv/bin/python scraper.py --max-pages 2` | Quick test: only the first 2 pages (100 rows) |
-| `.venv/bin/python scraper.py --from-file samples/page1.html` | **Offline**: parses one saved page, no network |
-| `.venv/bin/python scraper.py --save-dir samples/11-19-2026` | Live scrape that also saves each raw page as `page-N.html` |
-| `.venv/bin/python scraper.py --from-dir samples/11-19-2026` | **Offline**: replays a whole day saved with `--save-dir` |
-| `.venv/bin/python scraper.py --db other.db` | Writes to a different database file |
-
-Re-running is safe: rows are upserted, never duplicated. Tip: run one live scrape with `--save-dir`
-before the demo, so you can replay the full day offline with `--from-dir` if DIBBS is down.
+## Command reference
 
 ### Backend (API)
 | Command | What it does |
 |---|---|
 | `.venv/bin/uvicorn api:app --reload --port 8000` | Starts the API with auto-reload |
 | `DIBBS_DB=other.db .venv/bin/uvicorn api:app --port 8000` | Points the API at a different database |
-| open http://localhost:8000/docs | Interactive Swagger docs, where you can try every endpoint |
+| open http://localhost:8000/docs | Interactive Swagger docs for every endpoint |
 | `curl localhost:8000/api/health` | Checks the API is up and how many rows are in the DB |
 
 ### Frontend (UI)
@@ -94,7 +148,7 @@ before the demo, so you can replay the full day offline with `--from-dir` if DIB
 | Command | What it does |
 |---|---|
 | `sqlite3 dibbs.db ".tables"` | Lists tables: `rfq`, `profile`, `triage`, `app_state` |
-| `sqlite3 -header -column dibbs.db "select * from rfq limit 10"` | Peek at the data |
+| `sqlite3 -header -column dibbs.db "select * from rfq limit 10"` | Shows the first rows |
 | `sqlite3 -header -csv dibbs.db "select * from rfq" > rfq.csv` | Exports to CSV |
 | `rm dibbs.db` | Starts fresh (recreated on the next scrape or API call) |
 
@@ -109,14 +163,16 @@ More queries are in [Viewing the data](#viewing-the-data).
 | `scraper.py` | Fetches RFQs from DIBBS for one issue date, parses them and upserts them into SQLite |
 | `db.py` | `connect()` (creates the schema if missing) and `upsert_many()` |
 | `schema.sql` | The `rfq` table and indexes |
-| `api.py` | FastAPI backend: browse/search, profile, matching, triage, and refresh (creates the `profile` and `triage` tables) |
+| `api.py` | FastAPI backend: browse/search, profile, matching, triage, and refresh (creates the `profile`, `triage` and `app_state` tables) |
 | `frontend/` | React + Vite single-page app |
 | `frontend/src/App.jsx` | Header (stats + refresh button) and tabs |
 | `frontend/src/Matches.jsx` | "My matches" view |
 | `frontend/src/Browse.jsx` | "All RFQs" table with search and filters |
 | `frontend/src/Profile.jsx` | Capability profile editor |
 | `frontend/src/api.js` | Thin fetch client for the API |
-| `samples/page1.html` | A saved DIBBS results page, for offline demos and testing |
+| `samples/` | Saved DIBBS results pages: `page1.html` and full days under `MM-DD-YYYY/` |
+| `demo_profile.json` | Example distributor profile used by `scripts/demo_reset.sh` |
+| `scripts/demo_reset.sh` | Rebuilds the database into a fixed state from the saved samples |
 | `dibbs.db` | The SQLite database (gitignored, created on first run) |
 
 ---
@@ -134,13 +190,13 @@ Base URL `http://localhost:8000`. Full schema at `/docs`.
 | `GET /api/fscs` | FSCs with RFQ counts, biggest first |
 | `GET /api/profile` / `PUT /api/profile` | Read or replace the capability profile |
 | `GET /api/matches` | RFQs matching the profile, with reasons and an `is_new` flag. Params: `include_dismissed`, `open_only` (default true), `new_only`, `limit`, `offset` |
-| `POST /api/matches/seen` | "I've gone through my list": everything in the DB now stops counting as new |
+| `POST /api/matches/seen` | Marks the current list as reviewed: everything in the DB stops counting as new |
 | `PUT /api/triage/{solicitation}` | Body `{"state": "interested" \| "dismissed"}` |
 | `DELETE /api/triage/{solicitation}` | Clears triage |
-| `POST /api/refresh` | Starts a background scrape. Body `{}` (today), `{"date": "MM-DD-YYYY"}`, `{"from_file": "samples/page1.html"}` or `{"from_dir": "samples/11-19-2026"}` (offline replay of a saved day) |
+| `POST /api/refresh` | Starts a background scrape. Body `{}` (today), `{"date": "MM-DD-YYYY"}`, `{"from_file": "samples/page1.html"}` or `{"from_dir": "samples/11-19-2026"}` (load a saved day) |
 | `GET /api/refresh` | Progress of the current or last refresh (pages, rows, inserted, updated, `new_matches`, error). `new_matches` = profile matches whose rows this refresh inserted |
 
-Example: set up a profile and get matches from the command line:
+Example: set a profile and fetch matches from the command line:
 ```bash
 curl -X PUT localhost:8000/api/profile -H 'Content-Type: application/json' \
   -d '{"groups":[{"supplier":"Acme Cable","nsns":["8455-01-469-8015"],"fscs":["6145"],"keywords":["cable"]}]}'
@@ -159,7 +215,7 @@ curl 'localhost:8000/api/matches?limit=5'
 
 ---
 
-## Scraper
+## Scraper internals
 
 ### What it does
 For a given **issue date** (today by default), the scraper:
@@ -174,12 +230,6 @@ page 1: 50 rows (50 new)
 ...
 page 15: 41 rows (41 new)
 Done 11-19-2026: 741 rows scraped, 741 new, 741 total in DB
-```
-
-DIBBS keeps about the last month of issue dates (see `RfqDates.aspx?category=issue`), so you can
-backfill by running `--date` once per day:
-```bash
-for d in 11-17-2026 11-18-2026; do .venv/bin/python scraper.py --date $d; done
 ```
 
 ### How it moves through DIBBS
@@ -247,7 +297,7 @@ sqlite3 -header -column dibbs.db "select solicitation_number, nsn, nomenclature,
 # Overview
 sqlite3 dibbs.db "select count(*) rows, count(distinct solicitation_number) sols, count(distinct fsc) fscs from rfq"
 
-# Biggest FSCs today
+# Biggest FSCs
 sqlite3 -header -column dibbs.db "select fsc, count(*) n from rfq group by fsc order by n desc limit 10"
 
 # Keyword search on the description
@@ -272,9 +322,9 @@ VS Code "SQLite Viewer" extension.
 - **UI is empty**: there's no data yet. Click **↻ Refresh from DIBBS**, or run
   `.venv/bin/python scraper.py --from-file samples/page1.html`.
 - **`Could not accept DoD consent banner`** / refresh failed: the consent form changed or the firewall
-  blocked the request. Try again, or use the sample page (`--from-file`, or the "Load saved sample page
-  instead" link in the UI). To save a fresh page, open the results page in your browser and use
-  Save Page As… → HTML only.
+  blocked the request. Try again, or load saved data (`--from-dir`, `--from-file`, or the "Load saved
+  sample page instead" link in the UI). To save a fresh page, open the results page in your browser and
+  use Save Page As… → HTML only.
 - **0 rows for a date**: DIBBS only lists issue dates on `RfqDates.aspx?category=issue`. Weekends
   and dates older than about a month return nothing.
 - **Parser broke after a DIBBS change**: refresh `samples/page1.html` from a live run and check
@@ -283,11 +333,11 @@ VS Code "SQLite Viewer" extension.
 
 ---
 
-## Deliberately left out
-- **Auth / multi-tenant**: one hardcoded profile.
-- **Scheduled daily scrape**: manual refresh (button or CLI) instead.
-- **Solicitation PDFs, tech docs, set-aside type, detail pages**: only the list-table fields are stored.
-- **Price / award history, email digests, fuzzy or semantic matching.**
+## Scope and limitations
+- **Single user**: one profile, no authentication or multi-tenancy.
+- **Manual refresh**: data is fetched with the CLI or the refresh button; there is no scheduled job.
+- **List fields only**: solicitation PDFs, tech docs, set-aside type and detail pages are not stored.
+- **Not included**: price/award history, email digests, fuzzy or semantic matching.
 
 ## Roadmap
 - Scheduled daily scrape
